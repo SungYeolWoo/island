@@ -115,3 +115,4 @@ export { collector } from './utils/status-collector';
 
 export { Di, ObjectWrapper, ObjectFactory } from 'island-di';
 export { Loggers } from 'island-loggers';
+export { RouteLogger } from './utils/route-logger';

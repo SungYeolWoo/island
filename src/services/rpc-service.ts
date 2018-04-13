@@ -13,6 +13,7 @@ import { sanitize, validate } from '../middleware/schema.middleware';
 import { Environments } from '../utils/environments';
 import { AbstractError, FatalError, ISLAND, LogicError, mergeIslandJsError } from '../utils/error';
 import { logger } from '../utils/logger';
+import { RouteLogger } from '../utils/route-logger';
 import reviver from '../utils/reviver';
 import { RpcRequest } from '../utils/rpc-request';
 import { IRpcResponse, RpcResponse } from '../utils/rpc-response';
@@ -27,7 +28,6 @@ const SERVICE_LOAD_TIME_MS = Environments.getIslandServiceLoadTimeMs();
 const RPC_RES_NOACK = Environments.isIslandRpcResNoack();
 const RPC_QUEUE_EXPIRES_MS = RPC_WAIT_TIMEOUT_MS + SERVICE_LOAD_TIME_MS;
 const NO_REVIVER = Environments.isNoReviver();
-const USE_TRACE_HEADER_LOG = Environments.isUsingTraceHeaderLog();
 const RPC_QUEUE_DISTRIB_SIZE = 16;
 
 export type RpcType = 'rpc' | 'endpoint';
@@ -238,12 +238,9 @@ export default class RPCService {
 
   public async invoke<T, U>(name: string, msg: T, opts?: {withRawdata: boolean}): Promise<U>;
   public async invoke(name: string, msg: any, opts?: {withRawdata: boolean}): Promise<any> {
-    const option = this.makeInvokeOption();
+    const option = this.makeInvokeOption(name);
     const p = this.waitResponse(option.correlationId!, (msg: Message) => {
-      const ns = cls.getNamespace('app');
-      if (msg.properties.headers.extra.mqstack) {
-        ns.set('mqstack', msg.properties.headers.extra.mqstack);
-      }
+      RouteLogger.replaceLogs('app', msg.properties.headers.extra.routeLogs);
       const res = RpcResponse.decode(msg.content);
       if (res.result === false) throw res.body;
       if (opts && opts.withRawdata) return { body: res.body, raw: msg.content };
@@ -360,32 +357,32 @@ export default class RPCService {
     });
   }
 
-  private makeInvokeOption(): amqp.Options.Publish {
-    const ns = cls.getNamespace('app');
-    const tattoo = ns.get('RequestTrackId');
-    const context = ns.get('Context');
-    const type = ns.get('Type');
-    const sessionType = ns.get('sessionType');
-    let mqstack = ns.get('mqstack');
-    if (USE_TRACE_HEADER_LOG || mqstack) {
-      mqstack = mqstack || [];
-      mqstack.push({ node: Environments.getHostName(), context, island: this.serviceName, type });
-    }
+  private makeInvokeOption(name: string): amqp.Options.Publish {
     const correlationId = uuid.v4();
-    const headers = {
-      tattoo,
-      from: { node: Environments.getHostName(), context, island: this.serviceName, type },
-      extra: {
-        sessionType,
-        mqstack
-      }
-    };
+    RouteLogger.saveLog({ clsNameSpace: 'app', context: name, type: 'req', protocol: 'RPC', correlationId });
     return {
       correlationId,
       expiration: RPC_WAIT_TIMEOUT_MS,
-      headers,
+      headers: this.getHeader(),
       replyTo: this.responseQueueName,
       timestamp: +(new Date())
+    };
+  }
+
+  private getHeader(): any {
+    const ns = cls.getNamespace('app');
+    return {
+      tattoo: ns.get('RequestTrackId'),
+      from: {
+        node: Environments.getHostName(),
+        context: ns.get('Context'),
+        island: this.serviceName,
+        type: ns.get('Type')
+      },
+      extra: { 
+        sessionType: ns.get('sessionType'), 
+        routeLogs: RouteLogger.getLogs('app')
+      }
     };
   }
 
@@ -417,21 +414,21 @@ export default class RPCService {
 
   // returns value again for convenience
   private async reply(replyTo: string, value: any, options: amqp.Options.Publish) {
-    const ns = cls.getNamespace('app');
-    const mqstack = ns.get('mqstack');
-    if (mqstack) {
-      mqstack.push({ node: Environments.getHostName(), replyto: replyTo, island: this.serviceName, type: 'rpc' });
-      if (options.headers && options.headers.extra) {
-        options.headers.extra.mqstack = mqstack;
-      }
-      if (USE_TRACE_HEADER_LOG) {
-        logger.debug(`TraceHeaderLog:\n${JSON.stringify(mqstack, null, 2)}`);
-      }
-    }
+    options.headers = this.getOptionsHeader(options);
+
     await this.channelPool.usingChannel(async channel => {
       return channel.sendToQueue(replyTo, RpcResponse.encode(value), options);
     });
     return value;
+  }
+
+  private getOptionsHeader(options: amqp.Options.Publish) {
+    const ns = cls.getNamespace('app');
+    RouteLogger.saveLog({ clsNameSpace: 'app', context: ns.get('Context'), type: 'res', protocol: 'RPC', correlationId: options.correlationId || ''});
+    RouteLogger.print('app');
+    options.headers.extra.routeLogs = RouteLogger.getLogs('app');
+
+    return options.headers;
   }
 
   // enter continuation-local-storage scope
@@ -519,9 +516,7 @@ export default class RPCService {
 
       const tattoo = headers && headers.tattoo;
       const extra = headers && headers.extra || {};
-      if (USE_TRACE_HEADER_LOG && !extra.mqstack) {
-        extra.mqstack = [];
-      }
+
       return this.enterCLS(tattoo, rpcName, extra, async () => {
         const options = { correlationId, headers };
         const parsed = JSON.parse(msg.content.toString('utf8'), RpcResponse.reviver);
