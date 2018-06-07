@@ -3,7 +3,6 @@ import { EventHookType, EventService } from '../services/event-service';
 import { BaseEvent, DebugEvent, PatternSubscriber } from '../services/event-subscriber';
 import { Environments } from '../utils/environments';
 import { jasmineAsyncAdapter as spec } from '../utils/jasmine-async-support';
-import { TraceLog } from '../utils/tracelog';
 
 import Bluebird = require('bluebird');
 
@@ -110,7 +109,6 @@ describe('EventService', () => {
   afterAll(done => {
     Bluebird.delay(500)
       .then(() => eventService.purge())
-      .then(() => TraceLog.purge())
       .then(() => amqpChannelPool.purge())
       .then(done)
       .catch(done.fail);
@@ -161,7 +159,6 @@ describe('Event-hook', () => {
 
   afterEach(spec(async () => {
     await Bluebird.delay(500);
-    await TraceLog.purge();
     await eventService.purge();
     await amqpChannelPool.purge();
   }));

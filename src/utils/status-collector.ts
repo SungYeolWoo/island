@@ -3,9 +3,6 @@ import { CalculatedData, StatusExporter } from 'island-status-exporter';
 import * as _ from 'lodash';
 import * as uuid from 'uuid';
 
-import Islet from '../islet';
-import { EventService } from '../services/event-service';
-import { BaseEvent } from '../services/event-subscriber';
 import { Environments } from '../utils/environments';
 import { logger } from '../utils/logger';
 
@@ -22,12 +19,6 @@ const CIRCUIT_BREAK_THRESHOLD: number = Environments.ISLAND_CIRCUIT_BREAK_FAILRA
 
 const processUptime: Date = new Date();
 // const SAVE_FILE_NAME: string = '';
-
-export class StatusExport extends BaseEvent<CalculatedData> {
-  constructor(args: CalculatedData) {
-    super('island.status.export', args);
-  }
-}
 
 if (STATUS_EXPORT)
   StatusExporter.initialize({
@@ -103,23 +94,26 @@ function setDecimalPoint(int: number): number {
   return Number(int.toFixed(2));
 }
 
+export type ColllectedStatusExporter = (collected: CalculatedData) => Promise<any>;
+
 export class StatusCollector {
   private collectedData: { [type: string]: RequestStatistics } = {};
   private onGoingMap: Map<string, any> = new Map();
   private startedAt: number = +new Date();
-  private eventService: EventService;
+  private exporters: {[key: string]: ColllectedStatusExporter} = {
+    FILE: o => StatusExporter.saveStatusJsonFile(o)
+  };
 
   public async saveStatus() {
     const calculated: CalculatedData = this.calculateMeasurementsByType();
     this.clearAndShiftData();
-    switch (STATUS_EXPORT_TYPE) {
-      case 'FILE':
-        return await StatusExporter.saveStatusJsonFile(calculated);
-      case 'EVENT':
-        return await this.sendStatusJsonEvent(calculated);
-      default:
-        break;
-    }
+    const exporter = this.exporters[STATUS_EXPORT_TYPE];
+    if (!exporter) return;
+    return exporter(calculated);
+  }
+
+  public async registerExporter(type: string, exporter: ColllectedStatusExporter) {
+    this.exporters[type] = exporter;
   }
 
   // Note:
@@ -236,13 +230,6 @@ export class StatusCollector {
   public needCircuitBreak(type: string, name: string): boolean {
     const stat = this.getStat(type, name);
     return RequestStatisticsHelper.needCircuitBreak(stat);
-  }
-
-  private sendStatusJsonEvent(data: CalculatedData) {
-    if (!this.eventService) {
-      this.eventService = Islet.getIslet().getAdaptee<EventService>('event');
-    }
-    return this.eventService && this.eventService.publishEvent(new StatusExport(data));
   }
 
   private getStat(type: string,  name: string): RequestStatistics {

@@ -10,11 +10,8 @@ import { Environments } from '../utils/environments';
 import { DEFAULT_SUBSCRIPTIONS, Events } from '../utils/event';
 import { logger } from '../utils/logger';
 import reviver from '../utils/reviver';
-import { collector } from '../utils/status-collector';
-
 import { RouteLogger } from '../utils/route-logger';
-import { TraceLog } from '../utils/tracelog';
-
+import { collector } from '../utils/status-collector';
 import { AmqpChannelPoolService } from './amqp-channel-pool-service';
 import {
   BaseEvent,
@@ -51,6 +48,12 @@ function enterScope(properties: any, func): Promise<any> {
   });
 }
 
+class StatusExport extends BaseEvent<any> {
+  constructor(args: any) {
+    super('island.status.export', args);
+  }
+}
+
 export class EventService {
   private static EXCHANGE_NAME: string = 'MESSAGE_BROKER_EXCHANGE';
   private channelPool: AmqpChannelPoolService;
@@ -72,7 +75,6 @@ export class EventService {
   }
 
   async initialize(channelPool: AmqpChannelPoolService, consumerChannelPool?: AmqpChannelPoolService): Promise<any> {
-    await TraceLog.initialize();
     this.ignoreEventLogRegexp = (Environments.getIgnoreEventLogRegexp() &&
       new RegExp(Environments.getIgnoreEventLogRegexp(), 'g')) as RegExp;
 
@@ -88,6 +90,7 @@ export class EventService {
       return this.subscribeEvent(eventClass, handler.bind(this), options);
     });
     fs.writeFileSync('./event.proc', JSON.stringify({ status: 'initialized', queue: this.fanoutQ }));
+    collector.registerExporter('EVENT', o => this.sendStatusJsonEvent(o));
   }
 
   async startConsume(): Promise<any> {
@@ -256,19 +259,7 @@ export class EventService {
         if (!this.ignoreEventLogRegexp || !msg.fields.routingKey.match(this.ignoreEventLogRegexp)) {
           logger.debug(`subscribe event : ${msg.fields.routingKey}`, content, msg.properties.headers);
         }
-        const log = new TraceLog(tattoo, msg.properties.timestamp || 0);
-        log.size = msg.content.byteLength;
-        log.from = headers.from;
-        log.to = {
-          context: msg.fields.routingKey,
-          island: this.serviceName,
-          node: Environments.getHostName()!,
-          type: 'event'
-        };
         return Bluebird.resolve(subscriber.handleEvent(content, msg))
-          .then(() => {
-            log.end();
-          })
           .catch(async e => {
             if (!e.extra || typeof e.extra === 'object') {
               e.extra = _.assign({
@@ -277,12 +268,7 @@ export class EventService {
                 island: this.serviceName
               }, e.extra);
             }
-            e = await this.dohook(EventHookType.ERROR, e);
-            log.end(e);
-            throw e;
-          })
-          .finally(() => {
-            log.shoot();
+            throw await this.dohook(EventHookType.ERROR, e);
           });
       });
     });
@@ -304,5 +290,9 @@ export class EventService {
     return this.channelPool.usingChannel(channel => {
       return Promise.resolve(channel.publish(exchange, routingKey, content, options));
     });
+  }
+
+  private sendStatusJsonEvent(data: any) {
+    return this.publishEvent(new StatusExport(data));
   }
 }

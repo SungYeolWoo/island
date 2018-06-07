@@ -19,7 +19,6 @@ import { AbstractEtcError, AbstractFatalError, AbstractLogicError, FatalError, I
 import { jasmineAsyncAdapter as spec } from '../utils/jasmine-async-support';
 import { logger } from '../utils/logger';
 import { collector } from '../utils/status-collector';
-import { TraceLog } from '../utils/tracelog';
 
 Environments.refreshEnvForDebug();
 
@@ -60,7 +59,6 @@ describe('RPC(isolated test)', () => {
     await rpcService.purge();
     await Bluebird.delay(100); // to have time to send ack
     await amqpChannelPool.purge();
-    await TraceLog.purge();
   }));
 
   it('rpc test #1: rpc call', spec(async () => {
@@ -222,7 +220,6 @@ describe('RPC(isolated test)', () => {
     await rpcService.listen();
     await rpcService.purge();
     await amqpChannelPool.purge();
-    await TraceLog.purge();
 
     const url = process.env.RABBITMQ_HOST || 'amqp://rabbitmq:5672';
     await amqpChannelPool.initialize({ url });
@@ -512,7 +509,6 @@ describe('RPC with reviver', async () => {
 
   afterEach(spec(async () => {
     await Bluebird.delay(100);
-    await TraceLog.purge();
     await rpcService.purge();
     await amqpChannelPool.purge();
   }));
@@ -542,7 +538,6 @@ describe('RPC-hook', () => {
 
   afterEach(spec(async () => {
     await Bluebird.delay(100);
-    await TraceLog.purge();
     await rpcService.purge();
     await amqpChannelPool.purge();
   }));
